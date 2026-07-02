@@ -39,9 +39,8 @@ jobs:
 
   # --------------------------------------------------------------------------
   # Cross-platform prebuilt binaries. Linux (static/musl) and Windows-gnu are
-  # cross-compiled from Linux with Zig (installed non-root via `pip install
-  # ziglang`) + cargo-zigbuild, so the Linux binaries are glibc-independent.
-  # macOS and Windows-arm64 build on native runners.
+  # cross-compiled from Linux with Zig + cargo-zigbuild, so the Linux binaries
+  # are glibc-independent. macOS and Windows-arm64 build on native runners.
   # --------------------------------------------------------------------------
   binaries:
     strategy:
@@ -89,7 +88,7 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-zigbuild
-      - name: Install Zig (non-root, via pip)
+      - name: Install Zig
         if: matrix.tool == 'zigbuild'
         run: pip install ziglang
 
