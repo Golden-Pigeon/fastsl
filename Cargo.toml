@@ -3,6 +3,7 @@ name = "fastsl"
 version = "0.1.0"
 edition = "2021"
 description = "Fast, lightweight read-only viewer for SwanLab local logs (swanboard-API compatible)"
+license = "Apache-2.0"
 
 [[bin]]
 name = "fastsl"

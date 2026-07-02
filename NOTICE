@@ -1,0 +1,16 @@
+faster_swandash (fastsl)
+Copyright 2026 The faster_swandash authors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+--------------------------------------------------------------------------------
+This product embeds and reuses the dashboard UI and replicates the HTTP API of:
+
+  SwanLab-Dashboard / swanboard
+  https://github.com/SwanHubX/SwanLab-Dashboard
+  Copyright Emotion Machine (Beijing) Technology Co., Ltd. and the SwanLab authors
+  Licensed under the Apache License, Version 2.0.
+
+The compiled Vue frontend bundle served by fastsl is built from a fork of that
+project (vendored as the `frontend/` git submodule) and remains under its
+original Apache-2.0 license.
