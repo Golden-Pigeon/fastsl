@@ -1,6 +1,6 @@
 [package]
 name = "fastsl"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Fast, lightweight read-only viewer for SwanLab local logs (swanboard-API compatible)"
 license = "Apache-2.0"
@@ -10,6 +10,21 @@ readme = "README.md"
 keywords = ["swanlab", "dashboard", "viewer", "visualization", "cli"]
 categories = ["command-line-utilities", "visualization"]
 include = ["src/**/*", "frontend_dist/**/*", "build.rs", "Cargo.toml", "LICENSE", "NOTICE", "README.md"]
+
+# Lets `cargo binstall fastsl` fetch the prebuilt binaries from GitHub Releases
+# (matches the archive naming produced by .github/workflows/release.yml).
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "{ name }-v{ version }-{ target }/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.zip"
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.zip"
+pkg-fmt = "zip"
 
 [[bin]]
 name = "fastsl"

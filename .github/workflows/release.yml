@@ -116,7 +116,7 @@ jobs:
         if: matrix.tool == 'cargo'
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package (unix)
+      - name: Package (bash)
         if: runner.os != 'Windows'
         shell: bash
         run: |
@@ -125,8 +125,14 @@ jobs:
           mkdir -p "dist/$name"
           cp "$bin" "dist/$name/"
           cp README.md LICENSE NOTICE "dist/$name/"
-          tar -C dist -czf "$name.tar.gz" "$name"
-          echo "ASSET=$name.tar.gz" >> "$GITHUB_ENV"
+          # Windows targets ship as .zip even when cross-built on Linux.
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            (cd dist && zip -qr "../$name.zip" "$name")
+            echo "ASSET=$name.zip" >> "$GITHUB_ENV"
+          else
+            tar -C dist -czf "$name.tar.gz" "$name"
+            echo "ASSET=$name.tar.gz" >> "$GITHUB_ENV"
+          fi
       - name: Package (windows)
         if: runner.os == 'Windows'
         shell: pwsh
