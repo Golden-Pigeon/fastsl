@@ -48,7 +48,8 @@ jobs:
       - name: Publish to crates.io
         env:
           FASTSL_SKIP_FRONTEND_BUILD: '1'
-        run: cargo publish --allow-dirty --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --allow-dirty
 
   # --------------------------------------------------------------------------
   # Cross-platform prebuilt binaries. Linux (static/musl) and Windows-gnu are

@@ -42,25 +42,31 @@ fn main() {
 
     // Dev path: (re)build the frontend and sync the output into the git-ignored frontend_dist/.
     if !submodule.join("node_modules").exists() {
-        run(
-            Command::new("npm")
-                .args(["install", "--no-audit", "--no-fund"])
-                .current_dir(&submodule),
-            "npm install",
-        );
+        run(&mut npm(&["install", "--no-audit", "--no-fund"], &submodule), "npm install");
     }
-    run(
-        Command::new("npm")
-            .args(["run", "build.release"])
-            .current_dir(&submodule),
-        "npm run build.release",
-    );
+    run(&mut npm(&["run", "build.release"], &submodule), "npm run build.release");
     assert!(
         template.join("index.html").exists(),
         "frontend build finished but produced no bundle at {}",
         template.display()
     );
     sync_dir(&template, &dist);
+}
+
+/// Build an `npm` command. On Windows `npm` is `npm.cmd`, which must be run via `cmd /C`
+/// (Rust's `Command` does not resolve `.cmd` shims), so native Windows builds work too.
+fn npm(args: &[&str], dir: &Path) -> Command {
+    let mut cmd = if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg("npm").args(args);
+        c
+    } else {
+        let mut c = Command::new("npm");
+        c.args(args);
+        c
+    };
+    cmd.current_dir(dir);
+    cmd
 }
 
 fn run(cmd: &mut Command, what: &str) {
