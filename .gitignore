@@ -1,0 +1,9 @@
+# Rust build output
+/target
+
+# Local Claude Code settings (machine-specific)
+/.claude
+
+# Runtime sidecars (written next to the logdir / cache-dir, not the repo)
+fastsl-ui.json
+fastsl-summary-cache.json
