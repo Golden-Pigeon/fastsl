@@ -1,0 +1,4 @@
+[submodule "frontend"]
+	path = frontend
+	url = https://github.com/Golden-Pigeon/SwanLab-Dashboard.git
+	branch = fastsl
