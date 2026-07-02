@@ -7,3 +7,6 @@
 # Runtime sidecars (written next to the logdir / cache-dir, not the repo)
 fastsl-ui.json
 fastsl-summary-cache.json
+
+# Generated frontend bundle (embedded at build; produced by build.rs / vendored into the crate at publish time)
+/frontend_dist

@@ -34,10 +34,10 @@ use crate::uistate::{UiState, SIDECAR_NAME};
 /// swanboard version advertised in the `SwanLab-Version` header (compat with the Vue client).
 const SWANLAB_VERSION: &str = "0.1.10b2";
 
-/// Embedded Vue bundle built from the `frontend/` submodule by `build.rs`
-/// (Vite output dir = `frontend/swanboard/template/`).
+/// Embedded Vue bundle. `build.rs` produces `frontend_dist/` (from the `frontend/` submodule in a
+/// dev build, or vendored into the published crate), and `rust-embed` embeds it here.
 #[derive(RustEmbed)]
-#[folder = "frontend/swanboard/template/"]
+#[folder = "frontend_dist/"]
 struct FrontendAssets;
 
 /// Shared application state.

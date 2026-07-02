@@ -1,0 +1,130 @@
+name: Release
+
+# Tag a version to publish to crates.io and attach prebuilt binaries to the GitHub Release:
+#   git tag v0.1.0 && git push origin v0.1.0
+# Requires a repository secret CARGO_REGISTRY_TOKEN (crates.io API token) for the publish job.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Publish the crate to crates.io. The Vue bundle is generated (git-ignored),
+  # then the submodule is deinitialized so cargo does not vendor it; `include`
+  # in Cargo.toml packages the generated frontend_dist/ into the .crate.
+  # --------------------------------------------------------------------------
+  publish-crate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Generate the embedded frontend bundle (frontend_dist/)
+        run: cargo build --release
+      - name: Remove the submodule working tree so cargo does not vendor it
+        run: git submodule deinit -f -- frontend
+      - name: Publish to crates.io
+        env:
+          FASTSL_SKIP_FRONTEND_BUILD: '1'
+        run: cargo publish --allow-dirty --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # --------------------------------------------------------------------------
+  # Cross-platform prebuilt binaries. Linux (static/musl) and Windows-gnu are
+  # cross-compiled from Linux with Zig (installed non-root via `pip install
+  # ziglang`) + cargo-zigbuild, so the Linux binaries are glibc-independent.
+  # macOS and Windows-arm64 build on native runners.
+  # --------------------------------------------------------------------------
+  binaries:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            tool: zigbuild
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            tool: zigbuild
+          - target: x86_64-pc-windows-gnu
+            os: ubuntu-latest
+            tool: zigbuild
+            ext: .exe
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            tool: cargo
+            ext: .exe
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            tool: cargo
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            tool: cargo
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Non-root Zig + cargo-zigbuild for the cross-compiled targets.
+      - name: Set up Zig + cargo-zigbuild
+        if: matrix.tool == 'zigbuild'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+      - name: Install Zig (non-root, via pip)
+        if: matrix.tool == 'zigbuild'
+        run: pip install ziglang
+
+      # build.rs runs on the host and builds the frontend (npm) → embedded.
+      - name: Build (zigbuild)
+        if: matrix.tool == 'zigbuild'
+        run: cargo zigbuild --release --target ${{ matrix.target }}
+      - name: Build (native)
+        if: matrix.tool == 'cargo'
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/fastsl${{ matrix.ext }}"
+          name="fastsl-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "$bin" "dist/$name/"
+          cp README.md LICENSE NOTICE "dist/$name/"
+          tar -C dist -czf "$name.tar.gz" "$name"
+          echo "ASSET=$name.tar.gz" >> "$GITHUB_ENV"
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = "target/${{ matrix.target }}/release/fastsl${{ matrix.ext }}"
+          $name = "fastsl-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
+          Copy-Item $bin "dist/$name/"
+          Copy-Item README.md,LICENSE,NOTICE "dist/$name/"
+          Compress-Archive -Path "dist/$name" -DestinationPath "$name.zip"
+          "ASSET=$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}

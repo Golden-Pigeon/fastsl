@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 description = "Fast, lightweight read-only viewer for SwanLab local logs (swanboard-API compatible)"
 license = "Apache-2.0"
+repository = "https://github.com/Golden-Pigeon/fastsl"
+homepage = "https://github.com/Golden-Pigeon/fastsl"
+readme = "README.md"
+keywords = ["swanlab", "dashboard", "viewer", "visualization", "cli"]
+categories = ["command-line-utilities", "visualization"]
+include = ["src/**/*", "frontend_dist/**/*", "build.rs", "Cargo.toml", "LICENSE", "NOTICE", "README.md"]
 
 [[bin]]
 name = "fastsl"

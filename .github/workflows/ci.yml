@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: Swatinem/rust-cache@v2
+      # build.rs builds the Vue frontend (npm) and embeds it.
+      - name: Build
+        run: cargo build --locked --verbose
+      - name: Test
+        run: cargo test --locked --verbose

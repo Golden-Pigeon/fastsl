@@ -1,4 +1,8 @@
-# fastsl — faster_swandash
+# fastsl
+
+[![crates.io](https://img.shields.io/crates/v/fastsl.svg)](https://crates.io/crates/fastsl)
+[![CI](https://github.com/Golden-Pigeon/fastsl/actions/workflows/ci.yml/badge.svg)](https://github.com/Golden-Pigeon/fastsl/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 A fast, **read-only** viewer for local [SwanLab](https://github.com/SwanHubX/SwanLab) logs.
 
@@ -7,7 +11,7 @@ with swanboard's `/api/v1` and embeds swanboard's own Vue dashboard — so the U
 `swanlab watch`, but it loads orders of magnitude faster on large or busy log directories.
 
 It exists because the stock `swanlab watch` / swanboard becomes unusable on big logdirs under
-training IO — e.g. on a 395-experiment / ~37k-file / 130 GB directory, `/api/v1/project` took
+training IO — e.g. on a ~400-experiment / ~37k-file / 130 GB directory, `/api/v1/project` took
 **548 s** and `/api/v1/project/summaries` **hung past 120 s**. fastsl serves the same data in
 **sub-second** time from a single command.
 
@@ -29,23 +33,30 @@ training IO — e.g. on a 395-experiment / ~37k-file / 130 GB directory, `/api/v
   ported LTTB downsampler for time series.
 - **Range-capable media** — images/audio/video served with HTTP Range support.
 
-## Requirements
+## Install
 
-- A Rust toolchain (stable)
-- Node.js + npm (the Vue frontend is built from a submodule at compile time)
-- git (the frontend is a submodule)
+### Prebuilt binaries (no toolchain needed)
 
-## Build
+Download the archive for your platform from the
+[latest release](https://github.com/Golden-Pigeon/fastsl/releases/latest), extract it, and run the
+`fastsl` binary. Each archive is a single self-contained executable (the UI is embedded).
+
+| OS | x86_64 | arm64 |
+|---|---|---|
+| Linux (static, glibc-independent) | `x86_64-unknown-linux-musl` | `aarch64-unknown-linux-musl` |
+| macOS | `x86_64-apple-darwin` | `aarch64-apple-darwin` |
+| Windows | `x86_64-pc-windows-gnu` | `aarch64-pc-windows-msvc` |
+
+The Linux builds are statically linked (built with [Zig](https://ziglang.org/) as the linker via
+`cargo-zigbuild`), so they run on any Linux distro regardless of its glibc version.
+
+### From crates.io
 
 ```bash
-git clone <this repo> && cd faster_swandash
-git submodule update --init --recursive
-cargo build --release        # produces a self-contained ./target/release/fastsl
+cargo install fastsl
 ```
 
-`build.rs` builds the frontend (`npm run build.release` in the `frontend/` submodule) and embeds
-the result; it only re-runs when frontend sources change. To reuse an already-built bundle without
-Node, set `FASTSL_SKIP_FRONTEND_BUILD=1`.
+The published crate ships the prebuilt UI bundle, so this needs only a Rust toolchain — no Node.js.
 
 ## Usage
 
@@ -59,6 +70,21 @@ fastsl --logdir <swanlog dir> [--host 127.0.0.1] [--port 5092] [--cache-dir <fas
 - `--cache-dir` — a fast (tmpfs/SSD) directory for the persistent summary cache; optional.
 
 Then open `http://<host>:<port>/` in a browser.
+
+## Build from source
+
+Building from source rebuilds the Vue frontend, so it additionally needs **Node.js + npm** and the
+frontend git submodule:
+
+```bash
+git clone --recurse-submodules https://github.com/Golden-Pigeon/fastsl
+cd fastsl
+cargo build --release        # produces a self-contained ./target/release/fastsl
+```
+
+`build.rs` builds the frontend (`npm run build.release` in the `frontend/` submodule) and embeds the
+result into the binary; it only re-runs when frontend sources change. To skip the Node build and
+reuse an already-built bundle, set `FASTSL_SKIP_FRONTEND_BUILD=1`.
 
 ## How it works
 
@@ -82,4 +108,5 @@ not support run mutation (stop/delete/rename).
 
 The dashboard UI and API contract come from [SwanLab](https://github.com/SwanHubX/SwanLab) /
 [SwanLab-Dashboard](https://github.com/SwanHubX/SwanLab-Dashboard) by the SwanHub team. fastsl is an
-independent, compatible backend that reuses that UI.
+independent, compatible backend that reuses that UI. It is licensed under Apache-2.0 (see `LICENSE`
+and `NOTICE`).

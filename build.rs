@@ -1,71 +1,66 @@
-//! Build the embedded frontend from the `frontend/` submodule before the crate compiles.
+//! Prepare the embedded frontend bundle (`frontend_dist/`) before the crate compiles.
 //!
-//! The frontend source (Vue3 + Vite) lives in the `frontend/` git submodule
-//! (a fork of SwanHubX/SwanLab-Dashboard). `npm run build.release` emits the bundle to
-//! `frontend/swanboard/template/`, which `FrontendAssets` (rust-embed) then embeds.
+//! Two modes:
+//! - **Dev** — the `frontend/` submodule is checked out and Node is available: build the Vue app
+//!   with Vite and sync the output into `frontend_dist/` (which `rust-embed` embeds). `frontend_dist/`
+//!   is a generated, git-ignored directory; it is never committed.
+//! - **Consumer** — building from the crates.io tarball (no submodule, no Node): use the
+//!   `frontend_dist/` that was vendored into the published `.crate` at publish time. No Node needed.
 //!
-//! Cargo only re-runs this script when the frontend sources change (see the
-//! `rerun-if-changed` lines), so ordinary Rust edits do not trigger an npm build.
-//! Set `FASTSL_SKIP_FRONTEND_BUILD=1` to reuse an already-built bundle without invoking
-//! Node (e.g. offline rebuilds); the build still fails if no bundle is present.
+//! `FASTSL_SKIP_FRONTEND_BUILD=1` forces the consumer path even when the submodule is present.
 
 use std::path::Path;
 use std::process::Command;
 
 fn main() {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let frontend = Path::new(manifest).join("frontend");
-    let template = frontend.join("swanboard").join("template");
-    let index = template.join("index.html");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dist = root.join("frontend_dist");
+    let submodule = root.join("frontend");
+    let template = submodule.join("swanboard").join("template");
 
-    // Rebuild the embedded bundle only when the frontend actually changes.
+    // Only re-run when the frontend source changes; plain Rust edits must not trigger an npm build.
     println!("cargo:rerun-if-changed=frontend/vue");
     println!("cargo:rerun-if-changed=frontend/package.json");
     println!("cargo:rerun-if-changed=frontend/vite.config.js");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=FASTSL_SKIP_FRONTEND_BUILD");
 
-    // The submodule must be checked out.
-    if !frontend.join("package.json").exists() {
-        panic!(
-            "frontend submodule is not initialized ({}). Run: git submodule update --init --recursive",
-            frontend.display()
-        );
-    }
+    let skip = std::env::var_os("FASTSL_SKIP_FRONTEND_BUILD").is_some();
+    let have_submodule = submodule.join("package.json").exists();
 
-    // Escape hatch: reuse the existing bundle without a Node toolchain.
-    if std::env::var_os("FASTSL_SKIP_FRONTEND_BUILD").is_some() {
-        if !index.exists() {
-            panic!(
-                "FASTSL_SKIP_FRONTEND_BUILD is set but no bundle exists at {}",
-                index.display()
-            );
-        }
+    if skip || !have_submodule {
+        // Consumer path: rely on the vendored bundle.
+        assert!(
+            dist.join("index.html").exists(),
+            "no frontend bundle at {} and the `frontend/` submodule is unavailable.\n\
+             For a dev build: `git submodule update --init --recursive` (needs Node.js).\n\
+             (Published crates ship a prebuilt bundle, so this should not happen for `cargo install`.)",
+            dist.display()
+        );
         return;
     }
 
-    // npm install only when dependencies are missing (mirrors upstream build_pypi.py).
-    if !frontend.join("node_modules").exists() {
+    // Dev path: (re)build the frontend and sync the output into the git-ignored frontend_dist/.
+    if !submodule.join("node_modules").exists() {
         run(
             Command::new("npm")
                 .args(["install", "--no-audit", "--no-fund"])
-                .current_dir(&frontend),
+                .current_dir(&submodule),
             "npm install",
         );
     }
     run(
         Command::new("npm")
             .args(["run", "build.release"])
-            .current_dir(&frontend),
+            .current_dir(&submodule),
         "npm run build.release",
     );
-
-    if !index.exists() {
-        panic!(
-            "frontend build finished but produced no bundle at {}",
-            index.display()
-        );
-    }
+    assert!(
+        template.join("index.html").exists(),
+        "frontend build finished but produced no bundle at {}",
+        template.display()
+    );
+    sync_dir(&template, &dist);
 }
 
 fn run(cmd: &mut Command, what: &str) {
@@ -74,5 +69,25 @@ fn run(cmd: &mut Command, what: &str) {
     });
     if !status.success() {
         panic!("`{what}` failed with {status}");
+    }
+}
+
+/// Replace `dst` with a fresh copy of `src`.
+fn sync_dir(src: &Path, dst: &Path) {
+    let _ = std::fs::remove_dir_all(dst);
+    copy_dir(src, dst);
+}
+
+fn copy_dir(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        let target = dst.join(entry.file_name());
+        if path.is_dir() {
+            copy_dir(&path, &target);
+        } else {
+            std::fs::copy(&path, &target).unwrap();
+        }
     }
 }
