@@ -150,7 +150,11 @@ async fn main() -> anyhow::Result<()> {
 /// fresh entries.
 fn spawn_summary_maintenance(logdir: Arc<PathBuf>, cache: SummaryCache) {
     tokio::spawn(async move {
-        warm_project_summaries("startup", logdir.clone(), cache.clone()).await;
+        if warm_project_summaries("startup", logdir.clone(), cache.clone()).await {
+            tracing::info!(
+                "initial summary prewarm complete — dashboard is ready; open the web UI now for fast loads"
+            );
+        }
         let (tx, mut rx) = tokio::sync::mpsc::channel::<&'static str>(8);
         let watcher = spawn_summary_watcher(logdir.clone(), tx.clone());
         let mut interval = tokio::time::interval(Duration::from_secs(30));
@@ -228,17 +232,33 @@ fn is_summary_relevant_path(path: &std::path::Path) -> bool {
     )
 }
 
-async fn warm_project_summaries(reason: &'static str, logdir: Arc<PathBuf>, cache: SummaryCache) {
+/// Runs one prewarm pass and logs its outcome. Returns `true` only when the pass
+/// completed successfully, so the caller can emit a distinct "ready" signal after
+/// the initial startup warm.
+async fn warm_project_summaries(
+    reason: &'static str,
+    logdir: Arc<PathBuf>,
+    cache: SummaryCache,
+) -> bool {
     let started = Instant::now();
     let result =
         tokio::task::spawn_blocking(move || db::prewarm_project_summaries(&logdir, &cache)).await;
     match result {
-        Ok(Ok(())) => tracing::info!(
-            "summary cache {reason} prewarm finished in {:.3}s",
-            started.elapsed().as_secs_f64()
-        ),
-        Ok(Err(e)) => tracing::warn!("summary cache {reason} prewarm failed: {e}"),
-        Err(e) => tracing::warn!("summary cache {reason} prewarm task failed: {e}"),
+        Ok(Ok(())) => {
+            tracing::info!(
+                "summary cache {reason} prewarm finished in {:.3}s",
+                started.elapsed().as_secs_f64()
+            );
+            true
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("summary cache {reason} prewarm failed: {e}");
+            false
+        }
+        Err(e) => {
+            tracing::warn!("summary cache {reason} prewarm task failed: {e}");
+            false
+        }
     }
 }
 
