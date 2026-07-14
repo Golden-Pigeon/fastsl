@@ -13,7 +13,10 @@ use moka::sync::Cache;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const SUMMARY_CACHE_NAME: &str = "fastsl-summary-cache.json";
+/// Filename prefix for the per-logdir persistent summary cache stored in `--cache-dir`.
+/// The full name is `{prefix}-{basename}-{hash8}.json` so multiple logdirs can safely
+/// share one cache dir without clobbering each other (see `cache_file_name`).
+pub const SUMMARY_CACHE_PREFIX: &str = "fastsl-summary-cache";
 
 #[derive(Default, Serialize, Deserialize, Clone)]
 struct PersistedSummaryCache {
@@ -38,7 +41,7 @@ impl SummaryCache {
             if let Err(e) = std::fs::create_dir_all(dir) {
                 tracing::warn!("failed to create summary cache dir {:?}: {e}", dir);
             }
-            dir.join(SUMMARY_CACHE_NAME)
+            dir.join(cache_file_name(&logdir_key, logdir))
         });
 
         let mut persisted = PersistedSummaryCache {
@@ -120,6 +123,50 @@ fn canonical_key(path: &Path) -> String {
         .into_owned()
 }
 
+/// Per-logdir cache filename: `{prefix}-{basename}-{hash8}.json`.
+///
+/// `basename` is the logdir's last path component, sanitized and length-capped so the name
+/// stays readable and bounded even for very long/deep logdir paths. `hash8` is a deterministic
+/// FNV-1a over the canonical logdir path, which guarantees uniqueness (and disambiguates two
+/// logdirs that share a basename). Stability across runs/toolchains is what lets a restart find
+/// the same cache file.
+fn cache_file_name(logdir_key: &str, logdir: &Path) -> String {
+    let basename = logdir
+        .file_name()
+        .map(|s| sanitize_basename(&s.to_string_lossy()))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "root".to_string());
+    format!(
+        "{SUMMARY_CACHE_PREFIX}-{basename}-{:08x}.json",
+        fnv1a_32(logdir_key.as_bytes())
+    )
+}
+
+/// Keeps `[A-Za-z0-9._-]`, replaces every other char with `_`, and caps length at 40 bytes so a
+/// deep/long final path segment cannot produce an unwieldy filename.
+fn sanitize_basename(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(40)
+        .collect()
+}
+
+/// Deterministic 32-bit FNV-1a (no dependency, stable across runs) for the filename suffix.
+fn fnv1a_32(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for &b in bytes {
+        hash ^= b as u32;
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
 #[cfg(test)]
 mod tests {
     use super::SummaryCache;
@@ -161,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_persisted_values_for_a_different_logdir() {
+    fn different_logdirs_get_separate_cache_files_and_keep_their_own_hits() {
         let cache_dir = unique_dir("summary-cache-logdir-isolation");
         let logdir_a = cache_dir.join("swanlog-a");
         let logdir_b = cache_dir.join("swanlog-b");
@@ -173,7 +220,32 @@ mod tests {
         cache_a.flush().unwrap();
 
         let cache_b = SummaryCache::new(100, Some(&cache_dir), &logdir_b);
-        assert!(cache_b.get("run-1/0/123/456").is_none());
+        cache_b.insert("run-2/0/789/012".to_string(), Arc::new(json!(7)));
+        cache_b.flush().unwrap();
+
+        // Two logdirs sharing one cache-dir must land in distinct files, not clobber each other.
+        let cache_files = std::fs::read_dir(&cache_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(super::SUMMARY_CACHE_PREFIX)
+            })
+            .count();
+        assert_eq!(
+            cache_files, 2,
+            "each logdir should own a distinct cache file"
+        );
+
+        // Each reloads only its own value and never sees the other logdir's key.
+        let reload_a = SummaryCache::new(100, Some(&cache_dir), &logdir_a);
+        assert_eq!(*reload_a.get("run-1/0/123/456").unwrap(), json!(42));
+        assert!(reload_a.get("run-2/0/789/012").is_none());
+
+        let reload_b = SummaryCache::new(100, Some(&cache_dir), &logdir_b);
+        assert_eq!(*reload_b.get("run-2/0/789/012").unwrap(), json!(7));
+        assert!(reload_b.get("run-1/0/123/456").is_none());
 
         std::fs::remove_dir_all(cache_dir).ok();
     }
