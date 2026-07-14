@@ -830,6 +830,20 @@ pub fn experiment_status(logdir: &Path, id: i64, overlay: &UiOverlay) -> Result<
 
 /// `GET /api/v1/project/charts` — multi-experiment comparison charts + namespaces.
 pub fn project_charts(logdir: &Path, overlay: &UiOverlay) -> Result<Value> {
+    project_charts_filtered(logdir, overlay, None)
+}
+
+/// Shared builder for the multi-experiment comparison view.
+///
+/// `filter = None` reproduces swanboard's `/project/charts` byte-for-byte. `filter = Some(ids)`
+/// (fastsl comparison groups) restricts the comparison to those experiment ids: each chart's
+/// `source`/`source_map` keeps only in-group experiments, charts with no in-group source are
+/// dropped, and namespaces drop those charts. An empty `ids` slice yields no charts.
+pub fn project_charts_filtered(
+    logdir: &Path,
+    overlay: &UiOverlay,
+    filter: Option<&[i64]>,
+) -> Result<Value> {
     let conn = open_ro(logdir)?;
     let project = project_dict(&conn)?;
     let project_nested = nullify_charts(&project);
@@ -845,6 +859,26 @@ pub fn project_charts(logdir: &Path, overlay: &UiOverlay) -> Result<Value> {
     // swanboard's get_proj_charts uses ONE source_map dict shared across all charts, so every
     // chart ends up carrying the accumulated union of all contributing experiments.
     let mut source_map_all = Map::new();
+
+    // Group filter: restrict each chart's source join to the selected experiment ids. Ids come
+    // from our own DB resolution (i64), so inlining them is injection-safe; an empty group matches
+    // nothing. Charts that survive the filter are recorded so namespaces can drop the rest.
+    let filter_clause = match filter {
+        Some([]) => " AND 1=0".to_string(),
+        Some(ids) => format!(
+            " AND t.experiment_id IN ({})",
+            ids.iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        None => String::new(),
+    };
+    let source_sql = format!(
+        "SELECT e.name, e.id, s.error FROM source s JOIN tag t ON s.tag_id=t.id \
+         JOIN experiment e ON t.experiment_id=e.id WHERE s.chart_id=?1{filter_clause} ORDER BY s.id"
+    );
+    let mut kept_charts: std::collections::HashSet<i64> = std::collections::HashSet::new();
 
     // Charts (type in ALLOW_TYPES). chart.__dict__: experiment_id null, project_id nested.
     let ccols = chart_base_cols();
@@ -879,10 +913,7 @@ pub fn project_charts(logdir: &Path, overlay: &UiOverlay) -> Result<Value> {
         }
         let sort = o.get("sort").and_then(|v| v.as_i64()).unwrap_or(0);
         // Sources: experiment names; source_map {exp_name: exp_id}.
-        let mut sstmt = conn.prepare(
-            "SELECT e.name, e.id, s.error FROM source s JOIN tag t ON s.tag_id=t.id \
-             JOIN experiment e ON t.experiment_id=e.id WHERE s.chart_id=?1 ORDER BY s.id",
-        )?;
+        let mut sstmt = conn.prepare(&source_sql)?;
         let srows = sstmt.query_map([cid], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -903,6 +934,11 @@ pub fn project_charts(logdir: &Path, overlay: &UiOverlay) -> Result<Value> {
                 }
             }
         }
+        // In a group view, a chart with no in-group experiment contributes nothing — drop it.
+        if filter.is_some() && source.is_empty() {
+            continue;
+        }
+        kept_charts.insert(cid);
         o.insert("experiment_id".into(), Value::Null);
         o.insert("project_id".into(), project.clone());
         o.insert("error".into(), Value::Object(error));
@@ -945,7 +981,10 @@ pub fn project_charts(logdir: &Path, overlay: &UiOverlay) -> Result<Value> {
             o.insert((*c).to_string(), vref_to_json(row.get_ref(i)?));
         }
         let nid = o.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        let ids = namespace_chart_ids(&conn, nid, true)?;
+        let mut ids = namespace_chart_ids(&conn, nid, true)?;
+        if filter.is_some() {
+            ids.retain(|id| kept_charts.contains(id)); // drop charts filtered out of the group
+        }
         if ids.is_empty() {
             continue; // swanboard drops namespaces without allowed charts
         }
@@ -987,6 +1026,35 @@ pub fn namespace_exists(logdir: &Path, id: i64) -> Result<bool> {
 pub fn experiment_exists(logdir: &Path, id: i64) -> Result<bool> {
     let conn = open_ro(logdir)?;
     Ok(run_id_of(&conn, id)?.is_some())
+}
+
+/// Whether an experiment with the given `run_id` exists (fastsl alias/group validation).
+pub fn run_id_exists(logdir: &Path, run_id: &str) -> Result<bool> {
+    let conn = open_ro(logdir)?;
+    let found: Option<i64> = conn
+        .query_row("SELECT id FROM experiment WHERE run_id=?1", [run_id], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    Ok(found.is_some())
+}
+
+/// Resolves experiment `run_id`s to row ids, preserving input order and silently dropping any
+/// run_id that no longer exists. Translates a fastsl group's members into the id filter for
+/// [`project_charts_filtered`].
+pub fn ids_for_run_ids(logdir: &Path, run_ids: &[String]) -> Result<Vec<i64>> {
+    if run_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let conn = open_ro(logdir)?;
+    let mut stmt = conn.prepare("SELECT id FROM experiment WHERE run_id=?1")?;
+    let mut ids = Vec::new();
+    for rid in run_ids {
+        if let Some(id) = stmt.query_row([rid], |r| r.get::<_, i64>(0)).optional()? {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
 }
 
 /// Whether a project row exists (for PATCH validation).

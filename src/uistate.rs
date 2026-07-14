@@ -20,6 +20,10 @@ use serde_json::Value;
 
 /// Sidecar filename stored alongside the swanlog dir (never inside `runs.swanlab`).
 pub const SIDECAR_NAME: &str = "fastsl-ui.json";
+/// Maximum number of comparison groups persisted in one sidecar.
+pub const MAX_GROUPS: usize = 100;
+/// Maximum experiments in one comparison group.
+pub const MAX_GROUP_MEMBERS: usize = 500;
 
 /// Persisted override maps. All keyed by the DB row id; absence means "use the DB value".
 #[derive(Default, Serialize, Deserialize, Clone)]
@@ -38,6 +42,25 @@ pub struct UiOverlay {
     pub project_pinned_opened: HashMap<i64, i64>,
     #[serde(default)]
     pub project_hidden_opened: HashMap<i64, i64>,
+    /// fastsl-only: experiment display alias, keyed by `run_id` (stable across DB rebuilds).
+    /// Absence (or an empty value) means "show the DB `name`".
+    #[serde(default)]
+    pub experiment_alias: HashMap<String, String>,
+    /// fastsl-only: user-defined comparison groups (ordered).
+    #[serde(default)]
+    pub groups: Vec<Group>,
+    /// Monotonic group-id counter; never reused after a delete.
+    #[serde(default)]
+    pub next_group_id: i64,
+}
+
+/// A user-defined comparison group. `members` are experiment `run_id`s, order preserved.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Group {
+    pub id: i64,
+    pub name: String,
+    #[serde(default)]
+    pub members: Vec<String>,
 }
 
 impl UiOverlay {
@@ -89,6 +112,14 @@ impl UiOverlay {
             None => db_value,
         }
     }
+
+    /// Non-empty alias for an experiment `run_id`, or `None` to fall back to the DB name.
+    pub fn alias(&self, run_id: &str) -> Option<&str> {
+        self.experiment_alias
+            .get(run_id)
+            .map(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+    }
 }
 
 /// Thread-safe overlay store with JSON persistence.
@@ -118,13 +149,13 @@ impl UiState {
     }
 
     /// Applies `f` to a cloned overlay, persists it, then swaps memory only after disk succeeds.
-    fn mutate<F: FnOnce(&mut UiOverlay)>(&self, f: F) -> Result<()> {
+    fn mutate<T, F: FnOnce(&mut UiOverlay) -> T>(&self, f: F) -> Result<T> {
         let _write_guard = self.write_lock.lock().unwrap();
         let mut next = self.inner.read().unwrap().clone();
-        f(&mut next);
+        let result = f(&mut next);
         self.persist(&next)?;
         *self.inner.write().unwrap() = next;
-        Ok(())
+        Ok(result)
     }
 
     /// Atomic write: serialize to a unique temp file in the same dir, then rename over the target.
@@ -184,6 +215,102 @@ impl UiState {
             o.project_hidden_opened.insert(project_id, opened);
         })
     }
+
+    // ---- fastsl-only: aliases + comparison groups (persisted to the same sidecar) ----
+
+    /// Sets or clears an experiment's alias. `Some(non-empty)` sets it; `None` or an empty
+    /// string removes the entry so the experiment reverts to its DB `name`.
+    pub fn set_experiment_alias(&self, run_id: &str, alias: Option<String>) -> Result<()> {
+        self.mutate(|o| match alias {
+            Some(a) if !a.is_empty() => {
+                o.experiment_alias.insert(run_id.to_string(), a);
+            }
+            _ => {
+                o.experiment_alias.remove(run_id);
+            }
+        })
+    }
+
+    /// Creates a group with a fresh monotonic id. Returns `None` after the group limit is reached.
+    pub fn create_group(&self, name: String, members: Vec<String>) -> Result<Option<Group>> {
+        self.mutate(|o| {
+            if o.groups.len() >= MAX_GROUPS {
+                return None;
+            }
+            let id = o.next_group_id.max(1);
+            o.next_group_id = id + 1;
+            let g = Group {
+                id,
+                name,
+                members: dedup_preserve(members),
+            };
+            o.groups.push(g.clone());
+            Some(g)
+        })
+    }
+
+    /// Renames a group. Returns `false` if no group has that id.
+    pub fn rename_group(&self, gid: i64, name: String) -> Result<bool> {
+        let mut found = false;
+        self.mutate(|o| {
+            if let Some(g) = o.groups.iter_mut().find(|g| g.id == gid) {
+                g.name = name;
+                found = true;
+            }
+        })?;
+        Ok(found)
+    }
+
+    /// Deletes a group. Returns `false` if no group has that id.
+    pub fn delete_group(&self, gid: i64) -> Result<bool> {
+        let mut found = false;
+        self.mutate(|o| {
+            let before = o.groups.len();
+            o.groups.retain(|g| g.id != gid);
+            found = o.groups.len() != before;
+        })?;
+        Ok(found)
+    }
+
+    /// Adds a member (run_id) to a group, de-duplicated. Returns `false` if the group is missing
+    /// or already at the member limit.
+    pub fn add_member(&self, gid: i64, run_id: &str) -> Result<bool> {
+        self.mutate(|o| {
+            let Some(g) = o.groups.iter_mut().find(|g| g.id == gid) else {
+                return false;
+            };
+            if g.members.iter().any(|m| m == run_id) {
+                return true;
+            }
+            if g.members.len() >= MAX_GROUP_MEMBERS {
+                return false;
+            }
+            g.members.push(run_id.to_string());
+            true
+        })
+    }
+
+    /// Removes a member (run_id) from a group. Returns `false` if the group is missing
+    /// (removal is idempotent for a member that was not present).
+    pub fn remove_member(&self, gid: i64, run_id: &str) -> Result<bool> {
+        let mut found = false;
+        self.mutate(|o| {
+            if let Some(g) = o.groups.iter_mut().find(|g| g.id == gid) {
+                g.members.retain(|m| m != run_id);
+                found = true;
+            }
+        })?;
+        Ok(found)
+    }
+}
+
+/// Drops duplicate run_ids while preserving first-seen order.
+fn dedup_preserve(items: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    items
+        .into_iter()
+        .filter(|s| seen.insert(s.clone()))
+        .collect()
 }
 
 /// swanboard truthiness: `1 if value else 0` (JSON bool, non-zero number, non-empty string).
@@ -200,5 +327,96 @@ pub fn truthy_to_int(v: &Value) -> i64 {
         1
     } else {
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_sidecar(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("fastsl-uistate-{name}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(SIDECAR_NAME)
+    }
+
+    #[test]
+    fn alias_set_clear_and_reload_from_disk() {
+        let path = temp_sidecar("alias");
+        let ui = UiState::load(path.clone());
+
+        ui.set_experiment_alias("run-abc", Some("baseline".into()))
+            .unwrap();
+        assert_eq!(ui.snapshot().alias("run-abc"), Some("baseline"));
+
+        // Reload from disk proves persistence.
+        let reloaded = UiState::load(path.clone());
+        assert_eq!(reloaded.snapshot().alias("run-abc"), Some("baseline"));
+
+        // Empty string clears → reverts to DB name (None).
+        reloaded
+            .set_experiment_alias("run-abc", Some(String::new()))
+            .unwrap();
+        assert_eq!(reloaded.snapshot().alias("run-abc"), None);
+        assert_eq!(UiState::load(path).snapshot().alias("run-abc"), None);
+    }
+
+    #[test]
+    fn group_crud_persists_and_ids_are_monotonic() {
+        let path = temp_sidecar("groups");
+        let ui = UiState::load(path.clone());
+
+        let g1 = ui
+            .create_group("baseline".into(), vec!["run-a".into(), "run-a".into()])
+            .unwrap()
+            .unwrap();
+        let g2 = ui.create_group("ablation".into(), vec![]).unwrap().unwrap();
+        assert_eq!(g1.id, 1);
+        assert_eq!(g2.id, 2, "ids are monotonic");
+        assert_eq!(g1.members, vec!["run-a"], "members de-duplicated");
+
+        assert!(ui.add_member(g2.id, "run-b").unwrap());
+        assert!(ui.add_member(g2.id, "run-b").unwrap(), "add is idempotent");
+        assert!(ui.rename_group(g1.id, "baseline-v2".into()).unwrap());
+        assert!(!ui.rename_group(999, "missing".into()).unwrap());
+
+        // Delete g1; g2's id is never reused by the next create.
+        assert!(ui.delete_group(g1.id).unwrap());
+        let g3 = ui.create_group("third".into(), vec![]).unwrap().unwrap();
+        assert_eq!(g3.id, 3, "deleted id 1 is not reused");
+
+        // Reload and verify persisted shape.
+        let groups = UiState::load(path).snapshot().groups;
+        let ids: Vec<i64> = groups.iter().map(|g| g.id).collect();
+        assert_eq!(ids, vec![2, 3]);
+        let g2_reloaded = groups.iter().find(|g| g.id == 2).unwrap();
+        assert_eq!(g2_reloaded.name, "ablation");
+        assert_eq!(g2_reloaded.members, vec!["run-b"]);
+    }
+
+    #[test]
+    fn remove_member_reports_group_presence() {
+        let path = temp_sidecar("remove-member");
+        let ui = UiState::load(path);
+        let g = ui
+            .create_group("g".into(), vec!["run-a".into(), "run-b".into()])
+            .unwrap()
+            .unwrap();
+
+        assert!(ui.remove_member(g.id, "run-a").unwrap());
+        assert!(
+            ui.remove_member(g.id, "run-a").unwrap(),
+            "removing an absent member still returns true (group exists)"
+        );
+        assert!(
+            !ui.remove_member(404, "run-a").unwrap(),
+            "missing group returns false"
+        );
+        assert_eq!(ui.snapshot().groups[0].members, vec!["run-b"]);
     }
 }

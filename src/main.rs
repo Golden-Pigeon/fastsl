@@ -7,6 +7,7 @@
 //! `SwanLab-Version` / `SwanLab-Process-Time` headers. API endpoints land in later tasks.
 
 mod api;
+mod api_fastsl;
 mod db;
 mod resp;
 mod summary_cache;
@@ -22,7 +23,7 @@ use axum::{
     http::{header, HeaderValue, StatusCode, Uri},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, patch},
+    routing::{delete, get, patch, post},
     Router,
 };
 use clap::Parser;
@@ -125,6 +126,26 @@ async fn main() -> anyhow::Result<()> {
         .route("/namespace/:id/opened", patch(api::patch_namespace_opened))
         .route("/chart/:id/status", patch(api::patch_chart_status))
         .route("/experiment/:id/show", patch(api::patch_experiment_show))
+        // fastsl-only: aliases + comparison groups (also sidecar-only writes).
+        .route("/fastsl/ui", get(api_fastsl::get_ui))
+        .route(
+            "/fastsl/experiment/:run_id/alias",
+            patch(api_fastsl::patch_alias),
+        )
+        .route("/fastsl/group", post(api_fastsl::create_group))
+        .route(
+            "/fastsl/group/:gid",
+            patch(api_fastsl::rename_group).delete(api_fastsl::delete_group),
+        )
+        .route(
+            "/fastsl/group/:gid/charts",
+            get(api_fastsl::get_group_charts),
+        )
+        .route("/fastsl/group/:gid/member", post(api_fastsl::add_member))
+        .route(
+            "/fastsl/group/:gid/member/:run_id",
+            delete(api_fastsl::remove_member),
+        )
         .layer(middleware::from_fn(api_headers))
         .with_state(state.clone());
 
